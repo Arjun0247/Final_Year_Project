@@ -109,37 +109,108 @@ export default function PredictPage() {
     return newEntry;
   };
 
-  // --- Image Quality Check ---
-  const checkImageQuality = (file: File) => {
-    const img = new Image();
-    img.src = URL.createObjectURL(file);
-    img.onload = () => {
-      const canvas = document.createElement("canvas");
-      canvas.width = img.width;
-      canvas.height = img.height;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        setQualityWarning("Unable to access canvas context");
-        return;
+  const isLikelyFingerprint = (w: number, h: number, pixels: Uint8ClampedArray) => {
+    if (w < 300 || h < 300) return false;
+
+    let totalGradient = 0;
+    let totalGray = 0;
+    let totalSq = 0;
+    const gray = new Float32Array(w * h);
+
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const idx = (y * w + x) * 4;
+        const v = (pixels[idx] + pixels[idx + 1] + pixels[idx + 2]) / 3;
+        gray[y * w + x] = v;
+        totalGray += v;
+        totalSq += v * v;
       }
-      ctx.drawImage(img, 0, 0);
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const data = imageData.data;
-      let colorSum = 0;
-      for (let i = 0; i < data.length; i += 4) {
-        colorSum += Math.floor((data[i] + data[i + 1] + data[i + 2]) / 3);
+    }
+
+    const n = w * h;
+    const mean = totalGray / n;
+    const variance = totalSq / n - mean * mean;
+
+    if (variance < 500) return false;
+
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        const center = gray[y * w + x];
+        const dx = gray[y * w + (x + 1)] - gray[y * w + (x - 1)];
+        const dy = gray[(y + 1) * w + x] - gray[(y - 1) * w + x];
+        totalGradient += Math.abs(dx) + Math.abs(dy);
       }
-      const brightness = Math.floor(colorSum / (img.width * img.height));
-      setQualityWarning(brightness < 40 ? "Image is too dark. Ensure better lighting." : null);
-    };
+    }
+
+    const gradientScore = totalGradient / ((w - 2) * (h - 2));
+    return gradientScore > 12;
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const validateFingerprintImage = (file: File): Promise<string | null> => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.src = URL.createObjectURL(file);
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.min(400, img.width);
+        canvas.height = Math.min(400, img.height);
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          resolve("Unable to validate image");
+          return;
+        }
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const headroom = imageData.data.length;
+        if (headroom === 0) {
+          resolve("Invalid image file");
+          return;
+        }
+
+        if (!isLikelyFingerprint(canvas.width, canvas.height, imageData.data)) {
+          resolve("Upload valid fingerprint image");
+          return;
+        }
+
+        const brightnessSamples = imageData.data;
+        let colorSum = 0;
+        for (let i = 0; i < brightnessSamples.length; i += 4) {
+          colorSum += (brightnessSamples[i] + brightnessSamples[i + 1] + brightnessSamples[i + 2]) / 3;
+        }
+        const avgBrightness = colorSum / (canvas.width * canvas.height);
+        if (avgBrightness < 40) {
+          resolve("Image too dark. Ensure better lighting.");
+          return;
+        }
+
+        resolve(null);
+      };
+      img.onerror = () => resolve("Unable to load image. Upload valid image.");
+    });
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const selected = e.target.files?.[0];
     if (!selected) return;
+
+    if (!selected.type.startsWith("image/")) {
+      setQualityWarning("Upload valid fingerprint image");
+      setFile(null);
+      setPreview(null);
+      return;
+    }
+
+    const validationError = await validateFingerprintImage(selected);
+    if (validationError) {
+      setQualityWarning(validationError);
+      setFile(null);
+      setPreview(null);
+      return;
+    }
+
+    setQualityWarning(null);
     setFile(selected);
     setPreview(URL.createObjectURL(selected));
-    checkImageQuality(selected);
   };
 
   const handlePredict = async () => {
