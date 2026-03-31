@@ -5,10 +5,6 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from pymongo import MongoClient, errors
 from bson.objectid import ObjectId
 import numpy as np
-import tensorflow as tf
-from tensorflow.keras.applications.resnet50 import preprocess_input, ResNet50
-from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, Dropout
 import cv2
 import os
 import json
@@ -22,43 +18,53 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
-# ✅ CONFIG
-app.config['JWT_SECRET_KEY'] = os.getenv("JWT_SECRET_KEY", "secret")
+# ================= CONFIG =================
+app.config['MONGO_URI'] = os.getenv("MONGO_URI")
+app.config['JWT_SECRET_KEY'] = os.getenv("JWT_SECRET_KEY", "change-this")
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=30)
 
-# ✅ MongoDB (with timeout to avoid hanging)
-mongo_uri = os.getenv("MONGO_URI")
-client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
+# ✅ Mongo with timeout (IMPORTANT)
+client = MongoClient(app.config['MONGO_URI'], serverSelectionTimeoutMS=5000)
 db = client.get_database("fingerprint_db")
 
 users_col = db.users
 scans_col = db.scans
 
+users_col.create_index('username', unique=True)
+users_col.create_index('email', unique=True)
+scans_col.create_index('user_id')
+
 jwt = JWTManager(app)
 
-# ✅ ROOT ROUTE (IMPORTANT FIX)
+# ================= ROOT =================
 @app.route('/')
 def home():
-    return "Backend is running 🚀"
+    return "Backend running 🚀"
 
-# ✅ HEALTH CHECK
+# ================= HEALTH =================
 @app.route('/health')
 def health():
     return jsonify({"status": "ok"}), 200
 
-# ✅ CLASS NAMES
+# ================= CLASSES =================
 try:
     with open('class_names.json') as f:
         CLASSES = json.load(f)
 except:
     CLASSES = ['A+', 'A-', 'AB+', 'AB-', 'B+', 'B-', 'O+', 'O-']
 
-# ✅ MODEL GLOBAL (lazy load)
-model = None
+# ================= MODEL =================
 MODEL_PATH = 'scanner_weights.pkl'
 GDRIVE_FILE_ID = "1vBQQ9I-HRxxx8oAyzWdpG7eV1IEkpCbh"
 
+model = None
+
 def build_model(num_classes=8):
+    # ✅ Lazy import (CRITICAL FIX)
+    from tensorflow.keras.applications import ResNet50
+    from tensorflow.keras.models import Model
+    from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, Dropout
+
     base_model = ResNet50(weights=None, include_top=False, input_shape=(224, 224, 3))
     x = base_model.output
     x = GlobalAveragePooling2D()(x)
@@ -66,6 +72,7 @@ def build_model(num_classes=8):
     x = Dense(256, activation='relu')(x)
     x = Dropout(0.3)(x)
     output = Dense(num_classes, activation='softmax')(x)
+
     return Model(inputs=base_model.input, outputs=output)
 
 def load_model():
@@ -91,8 +98,10 @@ def load_model():
 
     return model
 
-# ✅ PREPROCESSING
+# ================= PREPROCESS =================
 def preprocess_fingerprint(image_bytes):
+    from tensorflow.keras.applications.resnet50 import preprocess_input  # lazy import
+
     nparr = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
 
@@ -105,46 +114,52 @@ def preprocess_fingerprint(image_bytes):
     img = cv2.resize(img, (224, 224))
     img = np.stack([img]*3, axis=-1).astype('float32')
     img = preprocess_input(img)
+
     return np.expand_dims(img, axis=0)
 
-# ✅ SIGNUP
+# ================= AUTH =================
 @app.route('/signup', methods=['POST'])
 def signup():
-    data = request.get_json()
+    data = request.get_json() or {}
 
-    if not data:
-        return jsonify({'error': 'Invalid input'}), 400
+    if not data.get('username') or not data.get('email') or not data.get('password'):
+        return jsonify({'error': 'Missing fields'}), 400
 
-    if users_col.find_one({'email': data['email']}):
+    if users_col.find_one({'$or': [{'username': data['username']}, {'email': data['email']}]}):
         return jsonify({'error': 'User exists'}), 409
 
     user = {
+        'username': data['username'],
         'email': data['email'],
-        'password': generate_password_hash(data['password'])
+        'password_hash': generate_password_hash(data['password']),
+        'created_at': datetime.utcnow()
     }
 
-    users_col.insert_one(user)
-    return jsonify({'msg': 'User created'}), 201
+    result = users_col.insert_one(user)
+    token = create_access_token(identity=str(result.inserted_id))
 
-# ✅ LOGIN
+    return jsonify({'message': 'User created', 'token': token})
+
 @app.route('/login', methods=['POST'])
 def login():
-    data = request.get_json()
-    user = users_col.find_one({'email': data['email']})
+    data = request.get_json() or {}
 
-    if not user or not check_password_hash(user['password'], data['password']):
+    user = users_col.find_one({'email': data.get('email')})
+
+    if not user or not check_password_hash(user['password_hash'], data.get('password')):
         return jsonify({'error': 'Invalid credentials'}), 401
 
     token = create_access_token(identity=str(user['_id']))
     return jsonify({'token': token})
 
-# ✅ PREDICT (MODEL LOAD HERE)
+# ================= PREDICT =================
 @app.route('/predict', methods=['POST'])
 @jwt_required(optional=True)
 def predict():
     if 'file' not in request.files:
         return jsonify({'error': 'No file'}), 400
 
+    user_id = get_jwt_identity()
     file = request.files['file']
 
     try:
@@ -157,16 +172,60 @@ def predict():
             preds = np.random.rand(len(CLASSES))
 
         idx = int(np.argmax(preds))
+        confidence = float(preds[idx]) * 100
+
+        scan_id = None
+        if user_id:
+            result = scans_col.insert_one({
+                'user_id': ObjectId(user_id),
+                'blood_group': CLASSES[idx],
+                'confidence': confidence,
+                'timestamp': datetime.utcnow()
+            })
+            scan_id = str(result.inserted_id)
 
         return jsonify({
-            'prediction': CLASSES[idx],
-            'confidence': float(preds[idx]) * 100
+            'scan_id': scan_id,
+            'blood_group': CLASSES[idx],
+            'confidence': round(confidence, 2)
         })
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# ✅ RUN
+# ================= USER =================
+@app.route('/user/scans', methods=['GET'])
+@jwt_required()
+def get_user_scans():
+    user_id = get_jwt_identity()
+
+    docs = scans_col.find({'user_id': ObjectId(user_id)}).sort('timestamp', -1)
+
+    return jsonify({
+        'scans': [{
+            'id': str(scan['_id']),
+            'blood_group': scan['blood_group'],
+            'confidence': scan['confidence'],
+            'timestamp': scan['timestamp'].isoformat()
+        } for scan in docs]
+    })
+
+@app.route('/user/profile', methods=['GET'])
+@jwt_required()
+def profile():
+    user_id = get_jwt_identity()
+
+    user = users_col.find_one({'_id': ObjectId(user_id)})
+
+    return jsonify({
+        'user': {
+            'id': str(user['_id']),
+            'username': user['username'],
+            'email': user['email']
+        }
+    })
+
+# ================= RUN =================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
