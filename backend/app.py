@@ -1,10 +1,10 @@
 print("App starting...")
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from werkzeug.security import generate_password_hash, check_password_hash
-from pymongo import MongoClient, errors
+from pymongo import MongoClient
 from bson.objectid import ObjectId
 import numpy as np
 import cv2
@@ -26,13 +26,13 @@ app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=30)
 
 jwt = JWTManager(app)
 
-# ─── Lazy MongoDB ─────────────────────────────────────────
+# ─── Lazy MongoDB (WITH TIMEOUT FIX) ──────────────────────
 def get_db():
     uri = os.getenv("MONGO_URI")
     if not uri:
         raise Exception("MONGO_URI not set")
 
-    client = MongoClient(uri)
+    client = MongoClient(uri, serverSelectionTimeoutMS=3000)  # 🔥 FIX
     db = client.get_database("fingerprint_db")
     return db
 
@@ -40,14 +40,14 @@ def get_db():
 try:
     with open('class_names.json') as f:
         CLASSES = json.load(f)
-except FileNotFoundError:
+except:
     CLASSES = ['A+', 'A-', 'AB+', 'AB-', 'B+', 'B-', 'O+', 'O-']
 
 # ─── Model Config ─────────────────────────────────────────
 MODEL_PATH = 'scanner_weights.pkl'
 GDRIVE_FILE_ID = "1vBQQ9I-HRxxx8oAyzWdpG7eV1IEkpCbh"
 
-model = None  # lazy loaded
+model = None
 
 def build_model(num_classes=8):
     from tensorflow.keras.applications import ResNet50
@@ -73,7 +73,7 @@ def load_model():
             url = f"https://drive.google.com/uc?id={GDRIVE_FILE_ID}"
             gdown.download(url, MODEL_PATH, quiet=False)
 
-        model_local = build_model(num_classes=len(CLASSES))
+        model_local = build_model(len(CLASSES))
         with open(MODEL_PATH, 'rb') as f:
             weights = pickle.load(f)
 
@@ -81,9 +81,6 @@ def load_model():
         model = model_local
 
         print("Model loaded successfully")
-
-if not os.path.exists('static'):
-    os.makedirs('static')
 
 # ─── Preprocessing ────────────────────────────────────────
 def preprocess_fingerprint(image_bytes):
@@ -93,171 +90,91 @@ def preprocess_fingerprint(image_bytes):
     img = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
 
     if img is None:
-        raise ValueError('Invalid image file')
+        raise ValueError("Invalid image")
 
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    enhanced = clahe.apply(img)
-    blurred = cv2.GaussianBlur(enhanced, (3, 3), 0)
-
-    if np.mean(blurred) < 127:
-        blurred = 255 - blurred
-
-    cv2.imwrite('static/processed.png', blurred)
-
-    resized = cv2.resize(blurred, (224, 224))
-    img_array = np.stack([resized, resized, resized], axis=-1).astype('float32')
+    resized = cv2.resize(img, (224, 224))
+    img_array = np.stack([resized]*3, axis=-1).astype('float32')
     img_array = preprocess_input(img_array)
     img_array = np.expand_dims(img_array, axis=0)
 
     return img_array
 
-# ─── Routes ───────────────────────────────────────────────
+# ─── CRITICAL ROUTES (Railway Health Fix) ─────────────────
 @app.route('/')
 def home():
-    return "OK", 200
+    return Response("OK", status=200, mimetype='text/plain')  # 🔥 FIX
+
+@app.route('/ping')
+def ping():
+    return "pong", 200  # 🔥 ADD
 
 @app.route('/health')
-def health_check():
+def health():
     return {"status": "ok"}, 200
 
+# ─── AUTH ROUTES ──────────────────────────────────────────
 @app.route('/signup', methods=['POST'])
 def signup():
     db = get_db()
-    users_col = db.users
+    users = db.users
 
     data = request.get_json() or {}
-    if not data.get('username') or not data.get('email') or not data.get('password'):
-        return jsonify({'error': 'Missing required fields'}), 400
 
-    username = data['username'].strip()
-    email = data['email'].strip()
+    if users.find_one({'email': data.get('email')}):
+        return jsonify({'error': 'User exists'}), 409
 
-    if users_col.find_one({'$or': [{'username': username}, {'email': email}]}):
-        return jsonify({'error': 'Username or email already exists'}), 409
-
-    user_doc = {
-        'username': username,
-        'email': email,
-        'password_hash': generate_password_hash(data['password']),
+    user = {
+        'username': data.get('username'),
+        'email': data.get('email'),
+        'password_hash': generate_password_hash(data.get('password')),
         'created_at': datetime.utcnow()
     }
 
-    result = users_col.insert_one(user_doc)
-    user_id = str(result.inserted_id)
+    result = users.insert_one(user)
+    token = create_access_token(identity=str(result.inserted_id))
 
-    access_token = create_access_token(identity=user_id)
-
-    return jsonify({
-        'message': 'User created successfully',
-        'access_token': access_token
-    }), 201
+    return jsonify({'access_token': token}), 201
 
 @app.route('/login', methods=['POST'])
 def login():
     db = get_db()
-    users_col = db.users
+    users = db.users
 
     data = request.get_json() or {}
+    user = users.find_one({'email': data.get('email')})
 
-    user = users_col.find_one({'email': data.get('email')})
     if not user or not check_password_hash(user['password_hash'], data.get('password')):
-        return jsonify({'error': 'Invalid email or password'}), 401
+        return jsonify({'error': 'Invalid credentials'}), 401
 
-    access_token = create_access_token(identity=str(user['_id']))
+    token = create_access_token(identity=str(user['_id']))
+    return jsonify({'access_token': token}), 200
 
-    return jsonify({
-        'message': 'Login successful',
-        'access_token': access_token
-    }), 200
-
+# ─── ML ROUTE ─────────────────────────────────────────────
 @app.route('/predict', methods=['POST'])
-@jwt_required(optional=True)
 def predict():
     db = get_db()
-    scans_col = db.scans
+    scans = db.scans
 
     if 'file' not in request.files:
-        return jsonify({'error': 'No file uploaded'}), 400
-
-    user_id = get_jwt_identity()
-    file = request.files['file']
+        return jsonify({'error': 'No file'}), 400
 
     try:
         load_model()
 
-        processed_input = preprocess_fingerprint(file.read())
-        preds = model.predict(processed_input, verbose=0)[0]
+        processed = preprocess_fingerprint(request.files['file'].read())
+        preds = model.predict(processed, verbose=0)[0]
 
         idx = int(np.argmax(preds))
-        predicted_class = CLASSES[idx]
-        confidence = float(preds[idx]) * 100
-
-        scan_id = None
-        if user_id:
-            scan_doc = {
-                'user_id': ObjectId(user_id),
-                'blood_group': predicted_class,
-                'confidence': confidence,
-                'timestamp': datetime.utcnow()
-            }
-            result = scans_col.insert_one(scan_doc)
-            scan_id = str(result.inserted_id)
-
-        all_probs_dict = {CLASSES[i]: float(preds[i]) * 100 for i in range(len(CLASSES))}
 
         return jsonify({
-            'scan_id': scan_id,
-            'blood_group': predicted_class,
-            'confidence': round(confidence, 2),
-            'all_probabilities': all_probs_dict
-        }), 200
+            "prediction": CLASSES[idx],
+            "confidence": float(preds[idx]) * 100
+        })
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/user/scans', methods=['GET'])
-@jwt_required()
-def get_user_scans():
-    db = get_db()
-    scans_col = db.scans
-
-    user_id = get_jwt_identity()
-    docs = scans_col.find({'user_id': ObjectId(user_id)}).sort('timestamp', -1)
-
-    scans_data = [{
-        'id': str(scan['_id']),
-        'blood_group': scan['blood_group'],
-        'confidence': scan['confidence'],
-        'timestamp': scan['timestamp'].isoformat()
-    } for scan in docs]
-
-    return jsonify({'scans': scans_data}), 200
-
-@app.route('/user/profile', methods=['GET'])
-@jwt_required()
-def get_user_profile():
-    db = get_db()
-    users_col = db.users
-    scans_col = db.scans
-
-    user_id = get_jwt_identity()
-
-    user = users_col.find_one({'_id': ObjectId(user_id)})
-    if not user:
-        return jsonify({'error': 'User not found'}), 404
-
-    total_scans = scans_col.count_documents({'user_id': ObjectId(user_id)})
-
-    return jsonify({
-        'user': {
-            'id': str(user['_id']),
-            'username': user['username'],
-            'email': user['email'],
-            'total_scans': total_scans
-        }
-    }), 200
-
-# ✅ Optional local run
+# ─── LOCAL RUN ────────────────────────────────────────────
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
