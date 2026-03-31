@@ -1,0 +1,132 @@
+=====================================================
+FINGERPRINT BLOOD GROUP DETECTION
+Final Year Project
+=====================================================
+
+REQUIREMENTS:
+  Python 3.10.x  → https://www.python.org/downloads/release/python-3100/
+  Node.js LTS    → https://nodejs.org
+  Git (optional) → https://git-scm.com
+
+=====================================================
+BACKEND SETUP
+=====================================================
+
+1. Open CMD / Terminal
+
+2. Navigate to backend folder:
+   cd path\to\updated_project\backend
+
+3. Create virtual environment:
+   python -m venv venv
+
+4. Activate it:
+   Windows:    venv\Scripts\activate
+   Mac/Linux:  source venv/bin/activate
+
+5. Install dependencies:
+   pip install -r requirements.txt
+   (takes 5-10 minutes first time)
+
+6. Run backend:
+   python app.py
+
+SUCCESS looks like:
+   Classes loaded from class_names.json: ['A+', 'A-', ...]
+   Successfully loaded model weights from scanner_weights.pkl
+   Running on http://127.0.0.1:5000
+
+COMMON ERRORS:
+   "Weights file not found"
+   → Make sure scanner_weights.pkl is in backend folder
+
+   "Module not found"
+   → Make sure venv is activated before running
+
+=====================================================
+FRONTEND SETUP (open new terminal window)
+=====================================================
+
+1. Navigate to frontend folder:
+   cd path\to\updated_project\fingerprint-ui
+
+2. Install dependencies:
+   npm install
+   (takes 1-2 minutes first time)
+
+3. Run frontend:
+   npm run dev
+
+SUCCESS looks like:
+   ▲ Next.js
+   - Local: http://localhost:3000
+   - Ready ✅
+
+=====================================================
+RUNNING THE PROJECT
+=====================================================
+
+Both terminals must be running simultaneously:
+   Terminal 1 → backend  (http://127.0.0.1:5000)
+   Terminal 2 → frontend (http://localhost:3000)
+
+Open browser → http://localhost:3000
+
+=====================================================
+PROJECT FILES — WHAT EACH FILE DOES
+=====================================================
+
+backend/
+   app.py                → Flask API server (main backend file)
+   scanner_weights.pkl   → ML model weights (ResNet50 fine-tuned)
+   class_names.json      → Blood group class ordering
+   requirements.txt      → Python dependencies
+
+fingerprint-ui/
+   app/                  → Next.js page components
+   public/               → Static assets
+   package.json          → Node.js dependencies
+
+=====================================================
+IMPORTANT NOTES
+=====================================================
+
+→ DO NOT replace scanner_weights.pkl with any old model
+→ DO NOT use any other .keras or .h5 model files
+→ scanner_weights.pkl is the ONLY correct model
+→ Both backend AND frontend must run at same time
+→ Ignore TensorFlow GPU warnings — runs on CPU fine
+
+=====================================================
+ML MODEL DETAILS
+=====================================================
+
+Architecture  : ResNet50 (Transfer Learning)
+Training data : 8000 Kaggle images + 212 scanner images
+Accuracy      : 93.87% on scanner dataset
+Framework     : TensorFlow/Keras
+Python version: 3.10.x
+
+=====================================================
+TROUBLESHOOTING
+=====================================================
+
+Backend not starting:
+→ Check Python version is 3.10.x
+   python --version
+→ Check venv is activated (venv) shows in terminal
+→ Reinstall: pip install -r requirements.txt
+
+Frontend not starting:
+→ Check Node.js is installed
+   node --version
+→ Delete node_modules and reinstall
+   rmdir /s /q node_modules
+   npm install
+
+Predictions seem wrong:
+→ Make sure scanner_weights.pkl is present in backend/
+→ Make sure app.py is the latest version
+→ Restart backend (Ctrl+C then python app.py)
+
+=====================================================
