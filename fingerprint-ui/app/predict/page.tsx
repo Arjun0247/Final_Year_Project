@@ -14,9 +14,12 @@ import { useSpotlight } from "../hooks/useSpotlight";
 import { useAuth } from "../context/AuthContext";
 
 
+// --- Utility types ---
+type Compatibility = { give: string[]; receive: string[] };
+
 // --- Utility: Blood Compatibility Logic ---
-const getCompatibility = (bloodGroup) => {
-  const compatibility = {
+const getCompatibility = (bloodGroup: string): Compatibility => {
+  const compatibility: Record<string, Compatibility> = {
     "A+": { give: ["A+", "AB+"], receive: ["A+", "A-", "O+", "O-"] },
     "O+": { give: ["O+", "A+", "B+", "AB+"], receive: ["O+", "O-"] },
     "B+": { give: ["B+", "AB+"], receive: ["B+", "B-", "O+", "O-"] },
@@ -30,7 +33,7 @@ const getCompatibility = (bloodGroup) => {
 };
 
 // --- Utility: Mock Probability Distribution ---
-const generateProbabilityData = (predictedGroup) => {
+const generateProbabilityData = (predictedGroup: string) => {
   const groups = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"];
   return groups.map((g) => ({
     name: g,
@@ -41,7 +44,7 @@ const generateProbabilityData = (predictedGroup) => {
 // --- Utility: Build probability chart data from backend response ---
 const BLOOD_GROUPS = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"];
 
-const buildProbabilityData = (allProbabilities) => {
+const buildProbabilityData = (allProbabilities: Record<string, number> | null | undefined) => {
   if (!allProbabilities) return [];
   return BLOOD_GROUPS.map((g) => ({
     name: g,
@@ -50,22 +53,40 @@ const buildProbabilityData = (allProbabilities) => {
   }));
 };
 
+const Background = () => (
+  <>
+    <div className="absolute inset-0 z-0">
+      <div className="absolute inset-0 bg-gradient-to-t from-[#050505] via-[#050505]/95 to-[#050505]/80"></div>
+    </div>
+    <div
+      className="pointer-events-none fixed inset-0 z-0"
+      style={{
+        backgroundImage: `linear-gradient(0deg, transparent 24%, rgba(34, 211, 238, 0.1) 25%, rgba(34, 211, 238, 0.1) 26%, transparent 27%, transparent 74%, rgba(34, 211, 238, 0.1) 75%, rgba(34, 211, 238, 0.1) 76%, transparent 77%)`,
+        backgroundSize: '50px 50px',
+        maskImage: `radial-gradient(500px circle at var(--mouse-x, 50%) var(--mouse-y, 50%), black, transparent)`,
+        WebkitMaskImage: `radial-gradient(500px circle at var(--mouse-x, 50%) var(--mouse-y, 50%), black, transparent)`,
+        opacity: 0.4
+      }}
+    ></div>
+  </>
+);
+
 export default function PredictPage() {
   const { token, isLoggedIn } = useAuth();
   const [viewState, setViewState] = useState("landing"); // 'landing' or 'dashboard'
-  const [file, setFile] = useState(null);
-  const [preview, setPreview] = useState(null);
-  const [result, setResult] = useState(null);
-  const [confidence, setConfidence] = useState(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
+  const [result, setResult] = useState<string | null>(null);
+  const [confidence, setConfidence] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [qualityWarning, setQualityWarning] = useState(null);
-  const [probabilityData, setProbabilityData] = useState([]);
+  const [qualityWarning, setQualityWarning] = useState<string | null>(null);
+  const [probabilityData, setProbabilityData] = useState<Array<{ name: string; probability: number }>>([]);
 
 
 
   // --- FEATURE: Save Prediction to History ---
-  const saveToHistory = (bloodGroup, confidenceValue) => {
+  const saveToHistory = (bloodGroup: string, confidenceValue: number | null) => {
     const confidence = confidenceValue != null
       ? confidenceValue.toFixed(1)
       : (94 + Math.random() * 5).toFixed(1); // fallback if backend value missing
@@ -89,7 +110,7 @@ export default function PredictPage() {
   };
 
   // --- Image Quality Check ---
-  const checkImageQuality = (file) => {
+  const checkImageQuality = (file: File) => {
     const img = new Image();
     img.src = URL.createObjectURL(file);
     img.onload = () => {
@@ -97,6 +118,10 @@ export default function PredictPage() {
       canvas.width = img.width;
       canvas.height = img.height;
       const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        setQualityWarning("Unable to access canvas context");
+        return;
+      }
       ctx.drawImage(img, 0, 0);
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
       const data = imageData.data;
@@ -109,8 +134,8 @@ export default function PredictPage() {
     };
   };
 
-  const handleFileChange = (e) => {
-    const selected = e.target.files[0];
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selected = e.target.files?.[0];
     if (!selected) return;
     setFile(selected);
     setPreview(URL.createObjectURL(selected));
@@ -167,25 +192,6 @@ export default function PredictPage() {
   // --- Mouse Movement for Spotlight ---
   // Use optimized spotlight hook
   useSpotlight();
-
-  // Shared Background Component - Updated to only handle the spotlight overlay
-  const Background = () => (
-    <>
-      <div className="absolute inset-0 z-0">
-        <div className="absolute inset-0 bg-gradient-to-t from-[#050505] via-[#050505]/95 to-[#050505]/80"></div>
-      </div>
-      <div
-        className="pointer-events-none fixed inset-0 z-0"
-        style={{
-          backgroundImage: `linear-gradient(0deg, transparent 24%, rgba(34, 211, 238, 0.1) 25%, rgba(34, 211, 238, 0.1) 26%, transparent 27%, transparent 74%, rgba(34, 211, 238, 0.1) 75%, rgba(34, 211, 238, 0.1) 76%, transparent 77%)`,
-          backgroundSize: '50px 50px',
-          maskImage: `radial-gradient(500px circle at var(--mouse-x, 50%) var(--mouse-y, 50%), black, transparent)`,
-          WebkitMaskImage: `radial-gradient(500px circle at var(--mouse-x, 50%) var(--mouse-y, 50%), black, transparent)`,
-          opacity: 0.4
-        }}
-      ></div>
-    </>
-  );
 
 
   // --- LANDING VIEW (UPLOAD) ---
@@ -272,7 +278,7 @@ export default function PredictPage() {
               <h2 className="text-xl font-bold">Analyzed Sample</h2>
             </div>
             <div className="flex-1 rounded-2xl flex flex-col items-center justify-center p-8 bg-black/40 border border-slate-800 relative overflow-hidden">
-              <img src={preview} alt="Scan" className="max-h-[300px] object-contain rounded-lg shadow-2xl drop-shadow-[0_0_15px_rgba(6,182,212,0.3)]" />
+              <img src={preview || ""} alt="Scan" className="max-h-[300px] object-contain rounded-lg shadow-2xl drop-shadow-[0_0_15px_rgba(6,182,212,0.3)]" />
               <div className="absolute top-0 left-0 w-full h-[2px] bg-cyan-400 animate-scan opacity-50"></div>
             </div>
             <button onClick={() => setViewState("landing")} className="mt-6 w-full py-4 rounded-xl border border-slate-700 text-slate-300 hover:bg-slate-800 transition-all uppercase text-sm font-bold">New Scan</button>

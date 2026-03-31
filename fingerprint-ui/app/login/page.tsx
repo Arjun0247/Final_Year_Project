@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { useAuth } from '@/app/context/AuthContext';
 import Link from 'next/link';
 import { AlertTriangle, Loader, Eye, EyeOff } from 'lucide-react';
@@ -14,7 +14,6 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const { login, isLoggedIn } = useAuth();
   const router = useRouter();
-  const searchParams = useSearchParams();
 
   // Redirect to scan if already logged in
   if (isLoggedIn) {
@@ -34,8 +33,9 @@ export default function LoginPage() {
       setIsLoading(true);
       await login(email, password);
       router.push('/scan');
-    } catch (err: any) {
-      setError(err.message || 'Login failed. Please try again.');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message || 'Login failed. Please try again.');
     } finally {
       setIsLoading(false);
     }

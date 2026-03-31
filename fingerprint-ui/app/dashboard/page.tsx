@@ -11,34 +11,67 @@ import {
   ChevronRight, ArrowLeft
 } from "lucide-react";
 
-const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
 import Link from "next/link";
 import { useSpotlight } from "../hooks/useSpotlight";
 import { useAuth } from "../context/AuthContext";
 import axios from "axios";
 
+const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
+
+/* ✅ TYPES ADDED */
+type Stats = {
+  total: number;
+  avg: number;
+  mainGroup: string;
+};
+
+type Scan = {
+  id: string;
+  timestamp: string;
+  result: string;
+  confidence: number;
+  status: string;
+};
 
 export default function DashboardPage() {
   const { token, isLoggedIn } = useAuth();
-  const [history, setHistory] = useState([]);
-  const [stats, setStats] = useState({ total: 0, avg: 0, mainGroup: "N/A" });
 
+  /* ✅ FIXED TYPES */
+  const [history, setHistory] = useState<Scan[]>([]);
+  const [stats, setStats] = useState<Stats>({
+    total: 0,
+    avg: 0,
+    mainGroup: "N/A"
+  });
 
   // --- Load Data and Calculate Stats ---
   useEffect(() => {
-    const calculateStats = (data: any[]) => {
+    const calculateStats = (data: Scan[]) => {
       if (data.length === 0) {
         setStats({ total: 0, avg: 0, mainGroup: "N/A" });
         return;
       }
 
-      const avg = (data.reduce((acc: any, curr: any) => acc + parseFloat(curr.confidence), 0) / data.length).toFixed(1);
-      const counts = data.reduce((acc: any, curr: any) => {
-        const key = curr.result || curr.blood_group;
+      /* ✅ FIXED avg (number not string) */
+      const avg = parseFloat(
+        (data.reduce((acc: number, curr: Scan) => acc + Number(curr.confidence || 0), 0) / data.length).toFixed(1)
+      );
+
+      /* ✅ FIXED reduce typing */
+      const counts = data.reduce<Record<string, number>>((acc, curr: Scan) => {
+        const key = curr.result || "Unknown";
         acc[key] = (acc[key] || 0) + 1;
         return acc;
       }, {});
-      const main = Object.keys(counts).reduce((a, b) => counts[a] > counts[b] ? a : b);
+
+      /* ✅ SAFE main calculation */
+      const main =
+        Object.keys(counts).length > 0
+          ? Object.keys(counts).reduce((a, b) =>
+              counts[a] > counts[b] ? a : b
+            )
+          : "N/A";
+
       setStats({ total: data.length, avg, mainGroup: main });
     };
 
@@ -48,22 +81,34 @@ export default function DashboardPage() {
           const res = await axios.get(`${API}/user/scans`, {
             headers: { Authorization: `Bearer ${token}` }
           });
-          const data = (res.data.scans || []).map((scan: any) => ({
-            id: scan.id || scan._id,
-            timestamp: scan.timestamp,
-            result: scan.blood_group,
-            confidence: scan.confidence,
-            status: 'Verified'
-          }));
+
+          /* ✅ FIXED TYPES */
+          const data: Scan[] = (res.data.scans || []).map((scan: unknown) => {
+            const scanObj = scan as Record<string, unknown>;
+            return {
+              id: String(scanObj.id || scanObj._id || ""),
+              timestamp: String(scanObj.timestamp || ""),
+              result: String(scanObj.blood_group || "Unknown"),
+              confidence: Number(scanObj.confidence ?? 0),
+              status: 'Verified'
+            };
+          });
+
           setHistory(data);
           calculateStats(data);
           return;
         } catch (err) {
-          console.warn('Failed to fetch user scans, falling back to localStorage', err);
+          console.warn('Failed API, using localStorage', err);
         }
       }
 
-      const fallback = JSON.parse(localStorage.getItem("userHistory") || "[]");
+      const fallback: Scan[] = (() => {
+        try {
+          return JSON.parse(localStorage.getItem("userHistory") || "[]");
+        } catch {
+          return [];
+        }
+      })();
       setHistory(fallback);
       calculateStats(fallback);
     };
@@ -71,28 +116,27 @@ export default function DashboardPage() {
     loadHistory();
   }, [isLoggedIn, token]);
 
-  // Use optimized spotlight hook
   useSpotlight();
 
-
   // --- Chart Data Formatting ---
-  // Trend Chart: Oldest to Newest
-  const trendData = [...history].reverse().map((item, i) => ({
-    name: `Scan ${i + 1}`,
-    val: parseFloat(item.confidence)
-  }));
+  const trendData = history.length
+    ? [...history].reverse().map((item, i) => ({
+        name: `Scan ${i + 1}`,
+        val: Number(item?.confidence || 0)
+      }))
+    : [];
 
-  // Pie Chart: Distribution of Groups
   const groupDistribution = Object.entries(
-    history.reduce((acc, curr) => {
-      acc[curr.result] = (acc[curr.result] || 0) + 1;
+    history.reduce<Record<string, number>>((acc, curr: Scan) => {
+      const key = curr.result || "Unknown";
+      acc[key] = (acc[key] || 0) + 1;
       return acc;
     }, {})
   ).map(([name, value]) => ({ name, value }));
 
   const COLORS = ['#22d3ee', '#3b82f6', '#ef4444', '#a855f7', '#f59e0b'];
 
-  return (
+return (
     <div className="min-h-screen bg-[#050505] text-white flex pt-24">
 
 
@@ -283,7 +327,7 @@ export default function DashboardPage() {
                   </tr>
                 )) : (
                   <tr>
-                    <td colSpan="5" className="px-8 py-20 text-center text-slate-600 italic">No historical records found. Complete a scan to begin tracking.</td>
+                    <td colSpan={5} className="px-8 py-20 text-center text-slate-600 italic">No historical records found. Complete a scan to begin tracking.</td>
                   </tr>
                 )}
               </tbody>

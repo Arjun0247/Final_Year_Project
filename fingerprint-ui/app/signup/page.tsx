@@ -48,8 +48,9 @@ export default function SignupPage() {
       setIsLoading(true);
       await signup(username, email, password);
       router.push('/');
-    } catch (err: any) {
-      setError(err.message || 'Signup failed. Please try again.');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message || 'Signup failed. Please try again.');
     } finally {
       setIsLoading(false);
     }
