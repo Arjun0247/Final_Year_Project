@@ -5,10 +5,6 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from pymongo import MongoClient, errors
 from bson.objectid import ObjectId
 import numpy as np
-from tensorflow.keras.applications.resnet50 import preprocess_input
-from tensorflow.keras.applications import ResNet50
-from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, Dropout
 import cv2
 import os
 import json
@@ -51,9 +47,14 @@ except FileNotFoundError:
 MODEL_PATH = 'scanner_weights.pkl'
 GDRIVE_FILE_ID = "1vBQQ9I-HRxxx8oAyzWdpG7eV1IEkpCbh"
 
-model = None  # lazy loaded
+model = None  # lazy loading
+
 
 def build_model(num_classes=8):
+    from tensorflow.keras.applications import ResNet50
+    from tensorflow.keras.models import Model
+    from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, Dropout
+
     base_model = ResNet50(weights=None, include_top=False, input_shape=(224, 224, 3))
     x = base_model.output
     x = GlobalAveragePooling2D()(x)
@@ -62,6 +63,7 @@ def build_model(num_classes=8):
     x = Dropout(0.3)(x)
     output = Dense(num_classes, activation='softmax')(x)
     return Model(inputs=base_model.input, outputs=output)
+
 
 def load_model():
     global model
@@ -82,16 +84,20 @@ def load_model():
 
         print("Model loaded successfully")
 
+
 if not os.path.exists('static'):
     os.makedirs('static')
 
+
 # ─── Preprocessing ────────────────────────────────────────
 def preprocess_fingerprint(image_bytes):
+    from tensorflow.keras.applications.resnet50 import preprocess_input
+
     nparr = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
 
     if img is None:
-        raise ValueError('Could not decode image')
+        raise ValueError('Invalid image file')
 
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(img)
@@ -109,22 +115,22 @@ def preprocess_fingerprint(image_bytes):
 
     return img_array
 
+
 # ─── Routes ───────────────────────────────────────────────
 @app.route('/')
 def home():
-    return "Backend is running 🚀"
+    return "OK", 200
 
-@app.route('/health', methods=['GET'])
+
+@app.route('/health')
 def health_check():
-    return jsonify({
-        'status': 'ok',
-        'model_loaded': model is not None
-    }), 200
+    return {"status": "ok"}, 200
 
 
 @app.route('/signup', methods=['POST'])
 def signup():
     data = request.get_json() or {}
+
     if not data.get('username') or not data.get('email') or not data.get('password'):
         return jsonify({'error': 'Missing required fields'}), 400
 
@@ -178,7 +184,7 @@ def predict():
     file = request.files['file']
 
     try:
-        load_model()  # lazy load
+        load_model()  # 🔥 lazy load
 
         processed_input = preprocess_fingerprint(file.read())
         preds = model.predict(processed_input, verbose=0)[0]
@@ -248,7 +254,7 @@ def get_user_profile():
     }), 200
 
 
-# ✅ Optional (only for local dev)
+# ✅ Optional for local testing
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
