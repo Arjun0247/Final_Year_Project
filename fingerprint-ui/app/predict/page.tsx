@@ -2,6 +2,8 @@
 import { useState, useEffect } from "react";
 import axios from "axios";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
+
+const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
 import { jsPDF } from "jspdf";
 import {
   Download, AlertTriangle, Fingerprint, Activity,
@@ -126,7 +128,7 @@ export default function PredictPage() {
     try {
       const progTimer = setInterval(() => setProgress(p => p < 90 ? p + 10 : p), 300);
       const headers = token ? { Authorization: `Bearer ${token}` } : {};
-      const res = await axios.post("http://127.0.0.1:5000/predict", formData, { headers });
+      const res = await axios.post(`${API}/predict`, formData, { headers });
       clearInterval(progTimer);
 
       const predictedGroup = res.data.blood_group;

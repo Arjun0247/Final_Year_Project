@@ -4,11 +4,14 @@ import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Label
 } from "recharts";
+
 import {
   Activity, TrendingUp, Droplet, ShieldCheck,
   Clock, Search, Download, LayoutDashboard, Fingerprint,
   ChevronRight, ArrowLeft
 } from "lucide-react";
+
+const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
 import Link from "next/link";
 import { useSpotlight } from "../hooks/useSpotlight";
 import { useAuth } from "../context/AuthContext";
@@ -42,7 +45,7 @@ export default function DashboardPage() {
     const loadHistory = async () => {
       if (isLoggedIn && token) {
         try {
-          const res = await axios.get("http://127.0.0.1:5000/user/scans", {
+          const res = await axios.get(`${API}/user/scans`, {
             headers: { Authorization: `Bearer ${token}` }
           });
           const data = (res.data.scans || []).map((scan: any) => ({

@@ -20,6 +20,8 @@ interface AuthContextType {
   setToken: (token: string | null) => void;
 }
 
+const API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
+
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -43,7 +45,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = async (email: string, password: string) => {
     try {
       setIsLoading(true);
-      const response = await fetch('http://127.0.0.1:5000/login', {
+      const response = await fetch(`${API}/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
@@ -72,7 +74,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signup = async (username: string, email: string, password: string) => {
     try {
       setIsLoading(true);
-      const response = await fetch('http://127.0.0.1:5000/signup', {
+      const response = await fetch(`${API}/signup`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, email, password }),
