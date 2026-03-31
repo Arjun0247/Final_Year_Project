@@ -1,4 +1,6 @@
-from flask import Flask, request, jsonify
+print("App starting...")
+
+from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -18,241 +20,127 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
-# ================= CONFIG =================
+# ─── Config ───────────────────────────────────────────────
 app.config['JWT_SECRET_KEY'] = os.getenv("JWT_SECRET_KEY", "change-this")
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=30)
 
 jwt = JWTManager(app)
 
-# ================= ROOT =================
-@app.route('/')
-def home():
-    return "Backend running 🚀"
-
-@app.route('/health')
-def health():
-    return jsonify({"status": "ok"}), 200
-
-@app.route('/test')
-def test():
-    return "TEST OK"
-
-# ================= DATABASE (LAZY LOAD) =================
-mongo_uri = os.getenv("MONGO_URI")
-
-client = None
-db = None
-users_col = None
-scans_col = None
-
+# ─── Lazy MongoDB (FIXED) ─────────────────────────────────
 def get_db():
-    global client, db, users_col, scans_col
+    uri = os.getenv("MONGO_URI")
+    if not uri:
+        raise Exception("MONGO_URI not set")
 
-    if client is None:
-        try:
-            client = MongoClient(mongo_uri, serverSelectionTimeoutMS=3000)
-            client.server_info()  # force connection
-            db = client.get_database("fingerprint_db")
-            users_col = db.users
-            scans_col = db.scans
-            print("MongoDB connected ✅")
-        except Exception as e:
-            print("MongoDB connection failed ❌:", e)
-            return None, None
+    return MongoClient(uri, serverSelectionTimeoutMS=3000).get_database("fingerprint_db")
 
-    return users_col, scans_col
-
-# ================= CLASSES =================
+# ─── Class Names ──────────────────────────────────────────
 try:
     with open('class_names.json') as f:
         CLASSES = json.load(f)
 except:
     CLASSES = ['A+', 'A-', 'AB+', 'AB-', 'B+', 'B-', 'O+', 'O-']
 
-# ================= MODEL (LAZY LOAD) =================
+# ─── Model (LAZY LOADED) ──────────────────────────────────
 MODEL_PATH = 'scanner_weights.pkl'
 GDRIVE_FILE_ID = "1vBQQ9I-HRxxx8oAyzWdpG7eV1IEkpCbh"
 
 model = None
 
-def build_model(num_classes=8):
+def build_model():
     from tensorflow.keras.applications import ResNet50
     from tensorflow.keras.models import Model
     from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, Dropout
 
-    base_model = ResNet50(weights=None, include_top=False, input_shape=(224, 224, 3))
-    x = base_model.output
-    x = GlobalAveragePooling2D()(x)
+    base = ResNet50(weights=None, include_top=False, input_shape=(224,224,3))
+    x = GlobalAveragePooling2D()(base.output)
     x = Dropout(0.3)(x)
     x = Dense(256, activation='relu')(x)
     x = Dropout(0.3)(x)
-    output = Dense(num_classes, activation='softmax')(x)
-
-    return Model(inputs=base_model.input, outputs=output)
+    out = Dense(len(CLASSES), activation='softmax')(x)
+    return Model(inputs=base.input, outputs=out)
 
 def load_model():
     global model
+    if model is None:
+        print("Loading model...")
 
-    if model is not None:
-        return model
+        if not os.path.exists(MODEL_PATH):
+            print("Downloading model...")
+            gdown.download(f"https://drive.google.com/uc?id={GDRIVE_FILE_ID}", MODEL_PATH, quiet=False)
 
-    if not os.path.exists(MODEL_PATH):
-        print("Downloading model...")
-        url = f"https://drive.google.com/uc?id={GDRIVE_FILE_ID}"
-        gdown.download(url, MODEL_PATH, quiet=False)
-
-    try:
-        model = build_model(len(CLASSES))
-        with open(MODEL_PATH, 'rb') as f:
+        model_local = build_model()
+        with open(MODEL_PATH, "rb") as f:
             weights = pickle.load(f)
-        model.set_weights(weights)
-        print("Model loaded successfully")
-    except Exception as e:
-        print("Model load failed:", e)
-        model = None
 
-    return model
+        model_local.set_weights(weights)
+        model = model_local
 
-# ================= PREPROCESS =================
-def preprocess_fingerprint(image_bytes):
+# ─── Preprocessing ────────────────────────────────────────
+def preprocess(image_bytes):
     from tensorflow.keras.applications.resnet50 import preprocess_input
 
-    nparr = np.frombuffer(image_bytes, np.uint8)
-    img = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
-
-    if img is None:
-        raise ValueError("Invalid image")
-
-    clahe = cv2.createCLAHE(2.0, (8, 8))
-    img = clahe.apply(img)
-
-    img = cv2.resize(img, (224, 224))
-    img = np.stack([img]*3, axis=-1).astype('float32')
+    img = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_GRAYSCALE)
+    img = cv2.resize(img, (224,224))
+    img = np.stack([img]*3, axis=-1).astype("float32")
     img = preprocess_input(img)
-
     return np.expand_dims(img, axis=0)
 
-# ================= AUTH =================
+# ─── CRITICAL ROUTES ──────────────────────────────────────
+@app.route('/')
+def home():
+    return Response("OK", 200)
+
+@app.route('/ping')
+def ping():
+    return "pong"
+
+@app.route('/health')
+def health():
+    return {"status":"ok"}
+
+# ─── AUTH ─────────────────────────────────────────────────
 @app.route('/signup', methods=['POST'])
 def signup():
-    users_col, _ = get_db()
-    if users_col is None:
-        return jsonify({"error": "DB not available"}), 500
+    db = get_db()
+    users = db.users
 
-    data = request.get_json() or {}
-
-    if not data.get('username') or not data.get('email') or not data.get('password'):
-        return jsonify({'error': 'Missing fields'}), 400
-
-    if users_col.find_one({'$or': [{'username': data['username']}, {'email': data['email']}]}):
+    data = request.get_json()
+    if users.find_one({'email': data.get('email')}):
         return jsonify({'error': 'User exists'}), 409
 
     user = {
-        'username': data['username'],
-        'email': data['email'],
-        'password_hash': generate_password_hash(data['password']),
-        'created_at': datetime.utcnow()
+        "username": data.get("username"),
+        "email": data.get("email"),
+        "password_hash": generate_password_hash(data.get("password")),
+        "created_at": datetime.utcnow()
     }
 
-    result = users_col.insert_one(user)
-    token = create_access_token(identity=str(result.inserted_id))
-
-    return jsonify({'message': 'User created', 'token': token})
+    uid = users.insert_one(user).inserted_id
+    return jsonify({"token": create_access_token(identity=str(uid))})
 
 @app.route('/login', methods=['POST'])
 def login():
-    users_col, _ = get_db()
-    if users_col is None:
-        return jsonify({"error": "DB not available"}), 500
+    db = get_db()
+    users = db.users
 
-    data = request.get_json() or {}
-
-    user = users_col.find_one({'email': data.get('email')})
+    data = request.get_json()
+    user = users.find_one({'email': data.get('email')})
 
     if not user or not check_password_hash(user['password_hash'], data.get('password')):
-        return jsonify({'error': 'Invalid credentials'}), 401
+        return jsonify({'error':'Invalid'}), 401
 
-    token = create_access_token(identity=str(user['_id']))
-    return jsonify({'token': token})
+    return jsonify({"token": create_access_token(identity=str(user['_id']))})
 
-# ================= PREDICT =================
+# ─── PREDICT ──────────────────────────────────────────────
 @app.route('/predict', methods=['POST'])
-@jwt_required(optional=True)
 def predict():
-    users_col, scans_col = get_db()
-
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file'}), 400
-
+    load_model()
     file = request.files['file']
-    user_id = get_jwt_identity()
+    preds = model.predict(preprocess(file.read()))[0]
+    return jsonify({"prediction": CLASSES[int(np.argmax(preds))]})
 
-    try:
-        model = load_model()
-        img = preprocess_fingerprint(file.read())
-
-        if model:
-            preds = model.predict(img)[0]
-        else:
-            preds = np.random.rand(len(CLASSES))
-
-        idx = int(np.argmax(preds))
-        confidence = float(preds[idx]) * 100
-
-        scan_id = None
-        if user_id and scans_col:
-            result = scans_col.insert_one({
-                'user_id': ObjectId(user_id),
-                'blood_group': CLASSES[idx],
-                'confidence': confidence,
-                'timestamp': datetime.utcnow()
-            })
-            scan_id = str(result.inserted_id)
-
-        return jsonify({
-            'scan_id': scan_id,
-            'blood_group': CLASSES[idx],
-            'confidence': round(confidence, 2)
-        })
-
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-# ================= USER =================
-@app.route('/user/scans', methods=['GET'])
-@jwt_required()
-def scans():
-    _, scans_col = get_db()
-    user_id = get_jwt_identity()
-
-    docs = scans_col.find({'user_id': ObjectId(user_id)}).sort('timestamp', -1)
-
-    return jsonify({
-        'scans': [{
-            'id': str(scan['_id']),
-            'blood_group': scan['blood_group'],
-            'confidence': scan['confidence'],
-            'timestamp': scan['timestamp'].isoformat()
-        } for scan in docs]
-    })
-
-@app.route('/user/profile', methods=['GET'])
-@jwt_required()
-def profile():
-    users_col, _ = get_db()
-    user_id = get_jwt_identity()
-
-    user = users_col.find_one({'_id': ObjectId(user_id)})
-
-    return jsonify({
-        'user': {
-            'id': str(user['_id']),
-            'username': user['username'],
-            'email': user['email']
-        }
-    })
-
-# ================= RUN =================
+# ─── LOCAL RUN ────────────────────────────────────────────
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
