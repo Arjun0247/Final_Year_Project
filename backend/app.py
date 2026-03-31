@@ -1,3 +1,5 @@
+print("App starting...")
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
@@ -10,7 +12,6 @@ import os
 import json
 import pickle
 import gdown
-from flask_pymongo import PyMongo
 from datetime import timedelta, datetime
 from dotenv import load_dotenv
 
@@ -20,21 +21,20 @@ app = Flask(__name__)
 CORS(app)
 
 # ─── Config ───────────────────────────────────────────────
-app.config['MONGO_URI'] = os.getenv("MONGO_URI")
 app.config['JWT_SECRET_KEY'] = os.getenv("JWT_SECRET_KEY", "change-this")
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=30)
 
-mongo = PyMongo(app)
-client = MongoClient(app.config['MONGO_URI'])
-db = client.get_database("fingerprint_db")
-users_col = db.users
-scans_col = db.scans
-
-users_col.create_index('username', unique=True)
-users_col.create_index('email', unique=True)
-scans_col.create_index('user_id')
-
 jwt = JWTManager(app)
+
+# ─── Lazy MongoDB ─────────────────────────────────────────
+def get_db():
+    uri = os.getenv("MONGO_URI")
+    if not uri:
+        raise Exception("MONGO_URI not set")
+
+    client = MongoClient(uri)
+    db = client.get_database("fingerprint_db")
+    return db
 
 # ─── Class Names ──────────────────────────────────────────
 try:
@@ -47,8 +47,7 @@ except FileNotFoundError:
 MODEL_PATH = 'scanner_weights.pkl'
 GDRIVE_FILE_ID = "1vBQQ9I-HRxxx8oAyzWdpG7eV1IEkpCbh"
 
-model = None  # lazy loading
-
+model = None  # lazy loaded
 
 def build_model(num_classes=8):
     from tensorflow.keras.applications import ResNet50
@@ -63,7 +62,6 @@ def build_model(num_classes=8):
     x = Dropout(0.3)(x)
     output = Dense(num_classes, activation='softmax')(x)
     return Model(inputs=base_model.input, outputs=output)
-
 
 def load_model():
     global model
@@ -84,10 +82,8 @@ def load_model():
 
         print("Model loaded successfully")
 
-
 if not os.path.exists('static'):
     os.makedirs('static')
-
 
 # ─── Preprocessing ────────────────────────────────────────
 def preprocess_fingerprint(image_bytes):
@@ -115,22 +111,21 @@ def preprocess_fingerprint(image_bytes):
 
     return img_array
 
-
 # ─── Routes ───────────────────────────────────────────────
 @app.route('/')
 def home():
     return "OK", 200
 
-
 @app.route('/health')
 def health_check():
     return {"status": "ok"}, 200
 
-
 @app.route('/signup', methods=['POST'])
 def signup():
-    data = request.get_json() or {}
+    db = get_db()
+    users_col = db.users
 
+    data = request.get_json() or {}
     if not data.get('username') or not data.get('email') or not data.get('password'):
         return jsonify({'error': 'Missing required fields'}), 400
 
@@ -157,9 +152,11 @@ def signup():
         'access_token': access_token
     }), 201
 
-
 @app.route('/login', methods=['POST'])
 def login():
+    db = get_db()
+    users_col = db.users
+
     data = request.get_json() or {}
 
     user = users_col.find_one({'email': data.get('email')})
@@ -173,10 +170,12 @@ def login():
         'access_token': access_token
     }), 200
 
-
 @app.route('/predict', methods=['POST'])
 @jwt_required(optional=True)
 def predict():
+    db = get_db()
+    scans_col = db.scans
+
     if 'file' not in request.files:
         return jsonify({'error': 'No file uploaded'}), 400
 
@@ -184,7 +183,7 @@ def predict():
     file = request.files['file']
 
     try:
-        load_model()  # 🔥 lazy load
+        load_model()
 
         processed_input = preprocess_fingerprint(file.read())
         preds = model.predict(processed_input, verbose=0)[0]
@@ -216,10 +215,12 @@ def predict():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-
 @app.route('/user/scans', methods=['GET'])
 @jwt_required()
 def get_user_scans():
+    db = get_db()
+    scans_col = db.scans
+
     user_id = get_jwt_identity()
     docs = scans_col.find({'user_id': ObjectId(user_id)}).sort('timestamp', -1)
 
@@ -232,10 +233,13 @@ def get_user_scans():
 
     return jsonify({'scans': scans_data}), 200
 
-
 @app.route('/user/profile', methods=['GET'])
 @jwt_required()
 def get_user_profile():
+    db = get_db()
+    users_col = db.users
+    scans_col = db.scans
+
     user_id = get_jwt_identity()
 
     user = users_col.find_one({'_id': ObjectId(user_id)})
@@ -253,8 +257,7 @@ def get_user_profile():
         }
     }), 200
 
-
-# ✅ Optional for local testing
+# ✅ Optional local run
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
