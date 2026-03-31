@@ -2,7 +2,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from werkzeug.security import generate_password_hash, check_password_hash
-from pymongo import MongoClient, errors
+from pymongo import MongoClient
 from bson.objectid import ObjectId
 import numpy as np
 import cv2
@@ -19,20 +19,8 @@ app = Flask(__name__)
 CORS(app)
 
 # ================= CONFIG =================
-app.config['MONGO_URI'] = os.getenv("MONGO_URI")
 app.config['JWT_SECRET_KEY'] = os.getenv("JWT_SECRET_KEY", "change-this")
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=30)
-
-# ✅ Mongo with timeout (IMPORTANT)
-client = MongoClient(app.config['MONGO_URI'], serverSelectionTimeoutMS=5000)
-db = client.get_database("fingerprint_db")
-
-users_col = db.users
-scans_col = db.scans
-
-users_col.create_index('username', unique=True)
-users_col.create_index('email', unique=True)
-scans_col.create_index('user_id')
 
 jwt = JWTManager(app)
 
@@ -41,10 +29,38 @@ jwt = JWTManager(app)
 def home():
     return "Backend running 🚀"
 
-# ================= HEALTH =================
 @app.route('/health')
 def health():
     return jsonify({"status": "ok"}), 200
+
+@app.route('/test')
+def test():
+    return "TEST OK"
+
+# ================= DATABASE (LAZY LOAD) =================
+mongo_uri = os.getenv("MONGO_URI")
+
+client = None
+db = None
+users_col = None
+scans_col = None
+
+def get_db():
+    global client, db, users_col, scans_col
+
+    if client is None:
+        try:
+            client = MongoClient(mongo_uri, serverSelectionTimeoutMS=3000)
+            client.server_info()  # force connection
+            db = client.get_database("fingerprint_db")
+            users_col = db.users
+            scans_col = db.scans
+            print("MongoDB connected ✅")
+        except Exception as e:
+            print("MongoDB connection failed ❌:", e)
+            return None, None
+
+    return users_col, scans_col
 
 # ================= CLASSES =================
 try:
@@ -53,14 +69,13 @@ try:
 except:
     CLASSES = ['A+', 'A-', 'AB+', 'AB-', 'B+', 'B-', 'O+', 'O-']
 
-# ================= MODEL =================
+# ================= MODEL (LAZY LOAD) =================
 MODEL_PATH = 'scanner_weights.pkl'
 GDRIVE_FILE_ID = "1vBQQ9I-HRxxx8oAyzWdpG7eV1IEkpCbh"
 
 model = None
 
 def build_model(num_classes=8):
-    # ✅ Lazy import (CRITICAL FIX)
     from tensorflow.keras.applications import ResNet50
     from tensorflow.keras.models import Model
     from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, Dropout
@@ -100,7 +115,7 @@ def load_model():
 
 # ================= PREPROCESS =================
 def preprocess_fingerprint(image_bytes):
-    from tensorflow.keras.applications.resnet50 import preprocess_input  # lazy import
+    from tensorflow.keras.applications.resnet50 import preprocess_input
 
     nparr = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
@@ -120,6 +135,10 @@ def preprocess_fingerprint(image_bytes):
 # ================= AUTH =================
 @app.route('/signup', methods=['POST'])
 def signup():
+    users_col, _ = get_db()
+    if users_col is None:
+        return jsonify({"error": "DB not available"}), 500
+
     data = request.get_json() or {}
 
     if not data.get('username') or not data.get('email') or not data.get('password'):
@@ -142,6 +161,10 @@ def signup():
 
 @app.route('/login', methods=['POST'])
 def login():
+    users_col, _ = get_db()
+    if users_col is None:
+        return jsonify({"error": "DB not available"}), 500
+
     data = request.get_json() or {}
 
     user = users_col.find_one({'email': data.get('email')})
@@ -156,11 +179,13 @@ def login():
 @app.route('/predict', methods=['POST'])
 @jwt_required(optional=True)
 def predict():
+    users_col, scans_col = get_db()
+
     if 'file' not in request.files:
         return jsonify({'error': 'No file'}), 400
 
-    user_id = get_jwt_identity()
     file = request.files['file']
+    user_id = get_jwt_identity()
 
     try:
         model = load_model()
@@ -175,7 +200,7 @@ def predict():
         confidence = float(preds[idx]) * 100
 
         scan_id = None
-        if user_id:
+        if user_id and scans_col:
             result = scans_col.insert_one({
                 'user_id': ObjectId(user_id),
                 'blood_group': CLASSES[idx],
@@ -196,7 +221,8 @@ def predict():
 # ================= USER =================
 @app.route('/user/scans', methods=['GET'])
 @jwt_required()
-def get_user_scans():
+def scans():
+    _, scans_col = get_db()
     user_id = get_jwt_identity()
 
     docs = scans_col.find({'user_id': ObjectId(user_id)}).sort('timestamp', -1)
@@ -213,6 +239,7 @@ def get_user_scans():
 @app.route('/user/profile', methods=['GET'])
 @jwt_required()
 def profile():
+    users_col, _ = get_db()
     user_id = get_jwt_identity()
 
     user = users_col.find_one({'_id': ObjectId(user_id)})
